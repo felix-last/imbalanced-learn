@@ -55,8 +55,19 @@ class KMeansSMOTE(BaseOverSampler):
         + 1) / (minority_count + 1))`` under which the cluster will be
         considered a minority cluster.
 
+    minority_weight : float, optional (default=0.66)
+        If kmeans_args['n_clusters'] is not specified, this parameter will be used
+        to automatically determine a reasonable value for the number of clusters.
+        The number of clusters is then computed as the weighted arithmetic mean
+        of the number of minority instances and the number of majority instances. 
+        This parameter ``w1`` specifies the weight of the minority instances; the weight of 
+        majority instances is set to ``1-w1``.
+        ``n_clusters = (w1 * minority_count) + ((1-w1) * majority_count)
+
     kmeans_args : dict, optional (default={})
-        Parameters to be passed to sklearn.cluster.MiniBatchKMeans
+        Parameters to be passed to sklearn.cluster.MiniBatchKMeans. If n_clusters 
+        is not explicitly set, it will be automatically set; KMeans' default will 
+        not apply.
 
     smote_args : dict, optional (default={})
         Parameters to be passed to imblearn.over_sampling.SMOTE. Parameter ratio
@@ -68,14 +79,19 @@ class KMeansSMOTE(BaseOverSampler):
                 ratio='auto',
                 random_state=None,
                 imbalance_ratio_threshold=1.0,
+                minority_weight=0.66,
                 kmeans_args={},
                 smote_args={}):
         super(KMeansSMOTE, self).__init__(ratio=ratio, random_state=random_state)
         self.imbalance_ratio_threshold = imbalance_ratio_threshold
         self.kmeans_args = kmeans_args
         self.smote_args = smote_args
-        if ('random_state' not in self.smote_args) & (random_state is not None):
-            self.smote_args['random_state'] = random_state
+        if random_state is not None:
+            if ('random_state' not in self.smote_args):
+                self.smote_args['random_state'] = random_state
+            if ('random_state' not in self.kmeans_args):
+                self.kmeans_args['random_state'] = random_state
+        self.minority_weight = minority_weight
 
 
     def _cluster(self, X):
@@ -91,7 +107,6 @@ class KMeansSMOTE(BaseOverSampler):
         cluster_assignment : ndarray, shape (n_samples)
             The corresponding cluster label of `X_resampled`.
         """
-        
         kmeans = MiniBatchKMeans(**self.kmeans_args)
         if(X.shape[0] < kmeans.n_clusters):
             warnings.warn('Adapting kmeans_args.n_clusters to {0} because X only has {1} samples.'.format(X.shape[0],X.shape[0]))
@@ -170,6 +185,21 @@ class KMeansSMOTE(BaseOverSampler):
             The corresponding label of `X_resampled`
 
         """
+
+        # determine optimal number of clusters if none is given
+        if 'n_clusters' not in self.kmeans_args:
+            labels, generate_counts = zip(*self.ratio_.items())
+            minority_index, majority_index = np.argmax(generate_counts), np.argmin(generate_counts)
+            minority_label, majority_label = labels[minority_index], labels[majority_index]
+            minority_count = X[y == minority_label].shape[0]
+            majority_count = X[y == majority_label].shape[0]
+            if (self.minority_weight < 0) or (self.minority_weight > 1):
+                raise ValueError('minority_weight should be between 0 and 1. Got {}'.format(self.minority_weight))
+            # n_clusters is set to weighted mean of minority and majority count
+            self.kmeans_args['n_clusters'] = math.floor(
+                (minority_count * self.minority_weight) 
+                + (majority_count * (1-self.minority_weight)))
+
         resampled = list()
         for minority_class_label, n_samples in self.ratio_.items():
             if n_samples == 0:
