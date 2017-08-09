@@ -7,12 +7,14 @@ from __future__ import division
 
 import numpy as np
 import warnings
+import math
 from sklearn.utils import check_random_state
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import euclidean_distances
 
 from ..over_sampling.base import BaseOverSampler
 from ..over_sampling import SMOTE
+from ..over_sampling import RandomOverSampler
 from ..exceptions import raise_isinstance_error
 from ..utils import check_neighbors_object
 from ..utils.deprecation import deprecate_parameter
@@ -24,6 +26,8 @@ class KMeansSMOTE(BaseOverSampler):
 
     This method uses K-Means to cluster the dataset. Clusters are filtered
     based on the minority ratio.
+    Parameters equivalent to SMOTE: KMeansSMOTE(imbalance_ratio_threshold=float('Inf'), kmeans_args={'n_clusters':1})
+    Parameters equivalent to RandomOverSampling: KMeansSMOTE(imbalance_ratio_threshold=float('Inf'), kmeans_args={'n_clusters':1}, smote_args={'k_neighbors':0})
 
     Parameters
     ----------
@@ -51,22 +55,24 @@ class KMeansSMOTE(BaseOverSampler):
         ``RandomState`` instance used by ``np.random``.
 
     imbalance_ratio_threshold : float, optional (default=1.0)
-        Specify a threshold for a cluster's imbalance ratio  ``((majority_count
-        + 1) / (minority_count + 1))`` under which the cluster will be
-        considered a minority cluster.
+        Specify a threshold for a cluster's imbalance ratio  ``((majority_count + 1) / (minority_count + 1))``
+        under which the cluster will be considered a minority cluster.
+
+    density_power : float, optional (default=None)
+        Used to compute the minority "density" of each cluster. By default, the number of features will be used.
 
     minority_weight : float, optional (default=0.66)
         If kmeans_args['n_clusters'] is not specified, this parameter will be used
         to automatically determine a reasonable value for the number of clusters.
         The number of clusters is then computed as the weighted arithmetic mean
-        of the number of minority instances and the number of majority instances. 
-        This parameter ``w1`` specifies the weight of the minority instances; the weight of 
+        of the number of minority instances and the number of majority instances.
+        This parameter ``w1`` specifies the weight of the minority instances; the weight of
         majority instances is set to ``1-w1``.
         ``n_clusters = (w1 * minority_count) + ((1-w1) * majority_count)
 
     kmeans_args : dict, optional (default={})
-        Parameters to be passed to sklearn.cluster.MiniBatchKMeans. If n_clusters 
-        is not explicitly set, it will be automatically set; KMeans' default will 
+        Parameters to be passed to sklearn.cluster.KMeans. If n_clusters
+        is not explicitly set, it will be automatically set; KMeans' default will
         not apply.
 
     smote_args : dict, optional (default={})
@@ -80,6 +86,7 @@ class KMeansSMOTE(BaseOverSampler):
                 random_state=None,
                 imbalance_ratio_threshold=1.0,
                 minority_weight=0.66,
+                density_power=None,
                 kmeans_args={},
                 smote_args={}):
         super(KMeansSMOTE, self).__init__(ratio=ratio, random_state=random_state)
@@ -93,6 +100,7 @@ class KMeansSMOTE(BaseOverSampler):
                 self.kmeans_args['random_state'] = random_state
         self.minority_weight = minority_weight
 
+        self.density_power = density_power
 
     def _cluster(self, X):
         """Run k-means to cluster the dataset
@@ -107,14 +115,21 @@ class KMeansSMOTE(BaseOverSampler):
         cluster_assignment : ndarray, shape (n_samples)
             The corresponding cluster label of `X_resampled`.
         """
+
         kmeans = MiniBatchKMeans(**self.kmeans_args)
+
         if(X.shape[0] < kmeans.n_clusters):
             warnings.warn('Adapting kmeans_args.n_clusters to {0} because X only has {1} samples.'.format(X.shape[0],X.shape[0]))
             self.kmeans_args['n_clusters'] = X.shape[0]
             kmeans = MiniBatchKMeans(**self.kmeans_args)
+
+        if 'init_size' not in self.kmeans_args:
+            self.kmeans_args['init_size'] = min(2 * self.kmeans_args['n_clusters'], X.shape[0])
+            kmeans = MiniBatchKMeans(**self.kmeans_args)
+
         kmeans.fit_transform(X)
         cluster_assignment = kmeans.labels_
-        # kmeans.labels_ does not use continuous labels, 
+        # kmeans.labels_ does not use continuous labels,
         # i.e. some labels in 0..n_clusters may not exist. Tidy up this mess.
         return cluster_assignment
 
@@ -138,7 +153,7 @@ class KMeansSMOTE(BaseOverSampler):
             Vector of sampling weights for each cluster
         """
         # compute the shape of the density factors
-        # since the cluster labels are not continuous, make it large enough 
+        # since the cluster labels are not continuous, make it large enough
         # to fit all values up to the largest cluster label
         largest_cluster_label = np.max(np.unique(cluster_assignment))
         density_factors = np.zeros((largest_cluster_label + 1,), dtype=np.float64)
@@ -153,7 +168,7 @@ class KMeansSMOTE(BaseOverSampler):
             if (imbalance_ratio < self.imbalance_ratio_threshold) and (minority_count > 1):
                 average_minority_distance = np.mean(euclidean_distances(cluster))
                 if average_minority_distance is 0: average_minority_distance = 1e-1 # to avoid division by 0
-                density_factor = minority_count / (average_minority_distance ** X.shape[1])
+                density_factor = minority_count / (average_minority_distance ** self.density_power)
                 density_factors[i] = density_factor
 
         # prevent division by zero; set zero weights in majority clusters
@@ -197,8 +212,11 @@ class KMeansSMOTE(BaseOverSampler):
                 raise ValueError('minority_weight should be between 0 and 1. Got {}'.format(self.minority_weight))
             # n_clusters is set to weighted mean of minority and majority count
             self.kmeans_args['n_clusters'] = math.floor(
-                (minority_count * self.minority_weight) 
+                (minority_count * self.minority_weight)
                 + (majority_count * (1-self.minority_weight)))
+
+        if self.density_power is None:
+            self.density_power = X.shape[1]
 
         resampled = list()
         for minority_class_label, n_samples in self.ratio_.items():
@@ -207,9 +225,9 @@ class KMeansSMOTE(BaseOverSampler):
 
             cluster_assignment = self._cluster(X)
             sampling_weights = self._filter_clusters(X, y, cluster_assignment, minority_class_label)
+            smote_args = self.smote_args.copy()
             if np.count_nonzero(sampling_weights) > 0:
                 # perform k-means smote
-                smote_args = self.smote_args.copy()
                 for i in np.unique(cluster_assignment):
                     cluster_X = X[cluster_assignment == i]
                     cluster_y = y[cluster_assignment == i]
@@ -219,10 +237,6 @@ class KMeansSMOTE(BaseOverSampler):
                         cluster_minority_count = np.count_nonzero(cluster_y == minority_class_label)
                         generate_count = int(round(n_samples * sampling_weights[i]))
                         target_ratio[minority_class_label] = generate_count + cluster_minority_count
-
-                        # determine max number of nearest neighbors considering sample size
-                        n_minority_samples = np.count_nonzero(cluster_y == minority_class_label)
-                        max_k_neighbors = n_minority_samples - 1
 
                         # make sure that cluster_y has more than 1 class, adding a random point otherwise
                         remove_index = -1
@@ -237,46 +251,58 @@ class KMeansSMOTE(BaseOverSampler):
                         smote_args = self.smote_args.copy()
                         smote_args['ratio'] = target_ratio
 
-                        smote = SMOTE(**smote_args)
+                        smote_args = self._validate_smote_args(smote_args, cluster_minority_count)
+                        oversampler = SMOTE(**smote_args)
 
-                        # check if max_k_neighbors is violated also considering smote's default
-                        if smote.k_neighbors > max_k_neighbors:
-                            smote_args['k_neighbors'] = max_k_neighbors
-                            warnings.warn('Adapting smote_args.k_neighbors to {0} because cluster only has {1} minority samples.'.format(max_k_neighbors, n_minority_samples))
-                            smote = SMOTE(**smote_args)
+                        # if k_neighbors is 0, perform random oversampling instead of smote
+                        if ('k_neighbors' in smote_args) & (smote_args['k_neighbors'] == 0):
+                                oversampler = RandomOverSampler(random_state=smote_args['random_state'])
 
                         # finally, apply smote to cluster
                         with warnings.catch_warnings():
                             # ignore warnings about minority class getting bigger than majority class
                             # since this would only be true within this cluster
                             warnings.filterwarnings(action='ignore', category=UserWarning, message='After over-sampling\, the number of samples \(.*\) in class .* will be larger than the number of samples in the majority class \(class #.* \-\> .*\)')
-                            smote_resampled_X, smote_resampled_y = smote.fit_sample(cluster_X, cluster_y)
-                        
+                            cluster_resampled_X, cluster_resampled_y = oversampler.fit_sample(cluster_X, cluster_y)
+
                         if remove_index > -1:
                             # since SMOTE's results are ordered the same way as the data passed into it,
                             # the temporarily added point is at the same index position as it was added.
-                            smote_resampled_X = np.delete(smote_resampled_X, remove_index, 0)
-                            smote_resampled_y = np.delete(smote_resampled_y, remove_index, 0)
+                            cluster_resampled_X = np.delete(cluster_resampled_X, remove_index, 0)
+                            cluster_resampled_y = np.delete(cluster_resampled_y, remove_index, 0)
 
-                        resampled.append( (smote_resampled_X, smote_resampled_y) )
+                        resampled.append( (cluster_resampled_X, cluster_resampled_y) )
 
                     else:
                         # don't oversample this cluster, just add it to resampled results
                         resampled.append((cluster_X, cluster_y))
             else:
                 # all weights are zero -> perform regular smote
-                minority_count = np.count_nonzero( X[y == minority_class_label] )
-                warning_msg = 'No minority clusters found for class {0}. Performing regular SMOTE. Try changing the number of clusters. Recommended number of clusters: between {1} and the number of majority class instances.'.format(minority_class_label, minority_count)
-                warnings.warn(warning_msg)
-                smote = SMOTE(**self.smote_args)
-                return smote.fit_sample(X, y)
+                minority_count = np.count_nonzero( y == minority_class_label )
+                warnings.warn('No minority clusters found for class {}. Performing regular SMOTE. Try changing the number of clusters. Recommended number of clusters: between {} and the number of majority class instances.'.format(minority_class_label, minority_count))
+
+                smote_args = self._validate_smote_args(smote_args, minority_count)
+                oversampler = SMOTE(**smote_args)
+                return oversampler.fit_sample(X, y)
 
         resampled = list(zip(*resampled))
         if(len(resampled) > 0):
             X_resampled = np.concatenate(resampled[0], axis=0)
             y_resampled = np.concatenate(resampled[1], axis=0)
-        else: 
+        else:
             # no samples were generated because none were requested
             X_resampled = X.copy()
             y_resampled = y.copy()
         return X_resampled, y_resampled
+
+
+    def _validate_smote_args(self, smote_args, minority_count):
+        # determine max number of nearest neighbors considering sample size
+        max_k_neighbors =  minority_count - 1
+        # check if max_k_neighbors is violated also considering smote's default
+        smote = SMOTE(**smote_args)
+        if smote.k_neighbors > max_k_neighbors:
+            smote_args['k_neighbors'] = max_k_neighbors
+            warnings.warn('Adapting smote_args.k_neighbors to {0} because cluster only has {1} minority samples.'.format(max_k_neighbors, minority_count))
+            smote = SMOTE(**smote_args)
+        return smote_args
