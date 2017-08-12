@@ -93,11 +93,7 @@ class KMeansSMOTE(BaseOverSampler):
         self.imbalance_ratio_threshold = imbalance_ratio_threshold
         self.kmeans_args = kmeans_args
         self.smote_args = smote_args
-        if random_state is not None:
-            if ('random_state' not in self.smote_args):
-                self.smote_args['random_state'] = random_state
-            if ('random_state' not in self.kmeans_args):
-                self.kmeans_args['random_state'] = random_state
+        self.random_state = random_state
         self.minority_weight = minority_weight
 
         self.density_power = density_power
@@ -200,7 +196,12 @@ class KMeansSMOTE(BaseOverSampler):
             The corresponding label of `X_resampled`
 
         """
-
+        # copy random_state to sub-algorithms
+        if self.random_state is not None:
+            if ('random_state' not in self.smote_args):
+                    self.smote_args['random_state'] = self.random_state
+            if ('random_state' not in self.kmeans_args):
+                self.kmeans_args['random_state'] = self.random_state
         # determine optimal number of clusters if none is given
         if 'n_clusters' not in self.kmeans_args:
             labels, generate_counts = zip(*self.ratio_.items())
@@ -248,15 +249,17 @@ class KMeansSMOTE(BaseOverSampler):
                             cluster_y = np.append(cluster_y, np.asarray(majority_class_label).reshape((1,)), axis=0)
 
                         # modify copy of the user defined smote_args to reflect computed parameters
-                        smote_args = self.smote_args.copy()
                         smote_args['ratio'] = target_ratio
 
                         smote_args = self._validate_smote_args(smote_args, cluster_minority_count)
                         oversampler = SMOTE(**smote_args)
 
                         # if k_neighbors is 0, perform random oversampling instead of smote
-                        if ('k_neighbors' in smote_args) & (smote_args['k_neighbors'] == 0):
-                                oversampler = RandomOverSampler(random_state=smote_args['random_state'])
+                        if 'k_neighbors' in smote_args and smote_args['k_neighbors'] == 0:
+                                oversampler_args = {}
+                                if 'random_state' in smote_args:
+                                    oversampler_args['random_state'] = smote_args['random_state']
+                                oversampler = RandomOverSampler(**oversampler_args)
 
                         # finally, apply smote to cluster
                         with warnings.catch_warnings():
