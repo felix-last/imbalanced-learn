@@ -53,6 +53,7 @@ class KMeansSMOTE(BaseOverSampler):
         generator; If ``RandomState`` instance, random_state is the random
         number generator; If ``None``, the random number generator is the
         ``RandomState`` instance used by ``np.random``.
+        Will be copied to kmeans_args and smote_args if not explicitly passed there.
 
     imbalance_ratio_threshold : float, optional (default=1.0)
         Specify a threshold for a cluster's imbalance ratio  ``((majority_count + 1) / (minority_count + 1))``
@@ -69,6 +70,10 @@ class KMeansSMOTE(BaseOverSampler):
         This parameter ``w1`` specifies the weight of the minority instances; the weight of
         majority instances is set to ``1-w1``.
         ``n_clusters = (w1 * minority_count) + ((1-w1) * majority_count)
+    
+    n_jobs : int, optional (default=1)
+        The number of threads to open if possible. 
+        Will be copied to kmeans_args and smote_args if not explicitly passed there.
 
     kmeans_args : dict, optional (default={})
         Parameters to be passed to sklearn.cluster.KMeans. If n_clusters
@@ -88,13 +93,15 @@ class KMeansSMOTE(BaseOverSampler):
                 minority_weight=0.66,
                 density_power=None,
                 kmeans_args={},
-                smote_args={}):
+                smote_args={},
+                n_jobs=1):
         super(KMeansSMOTE, self).__init__(ratio=ratio, random_state=random_state)
         self.imbalance_ratio_threshold = imbalance_ratio_threshold
         self.kmeans_args = kmeans_args
         self.smote_args = smote_args
         self.random_state = random_state
         self.minority_weight = minority_weight
+        self.n_jobs=n_jobs
 
         self.density_power = density_power
 
@@ -196,12 +203,8 @@ class KMeansSMOTE(BaseOverSampler):
             The corresponding label of `X_resampled`
 
         """
-        # copy random_state to sub-algorithms
-        if self.random_state is not None:
-            if ('random_state' not in self.smote_args):
-                    self.smote_args['random_state'] = self.random_state
-            if ('random_state' not in self.kmeans_args):
-                self.kmeans_args['random_state'] = self.random_state
+        self._set_subalgorithm_params()
+
         # determine optimal number of clusters if none is given
         if 'n_clusters' not in self.kmeans_args:
             labels, generate_counts = zip(*self.ratio_.items())
@@ -309,3 +312,18 @@ class KMeansSMOTE(BaseOverSampler):
             warnings.warn('Adapting smote_args.k_neighbors to {0} because cluster only has {1} minority samples.'.format(max_k_neighbors, minority_count))
             smote = SMOTE(**smote_args)
         return smote_args
+    
+    def _set_subalgorithm_params(self):
+        # copy random_state to sub-algorithms
+        if self.random_state is not None:
+            if ('random_state' not in self.smote_args):
+                    self.smote_args['random_state'] = self.random_state
+            if ('random_state' not in self.kmeans_args):
+                self.kmeans_args['random_state'] = self.random_state
+
+        # copy n_jobs to sub-algorithms
+        if self.n_jobs is not None:
+            if ('n_jobs' not in self.smote_args):
+                    self.smote_args['n_jobs'] = self.n_jobs
+            if ('n_jobs' not in self.kmeans_args):
+                self.kmeans_args['n_jobs'] = self.n_jobs
