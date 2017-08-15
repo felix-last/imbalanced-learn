@@ -9,7 +9,6 @@ import numpy as np
 import warnings
 import math
 from sklearn.utils import check_random_state
-from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics.pairwise import euclidean_distances
 
 from ..over_sampling.base import BaseOverSampler
@@ -71,14 +70,17 @@ class KMeansSMOTE(BaseOverSampler):
         majority instances is set to ``1-w1``.
         ``n_clusters = (w1 * minority_count) + ((1-w1) * majority_count)
     
+    use_minibatch_kmeans : boolean, optional (default=True)
+        If False, use sklearn.cluster.KMeans. If True, use sklearn.cluster.MiniBatchKMeans.
+    
     n_jobs : int, optional (default=1)
         The number of threads to open if possible. 
         Will be copied to kmeans_args and smote_args if not explicitly passed there.
 
     kmeans_args : dict, optional (default={})
-        Parameters to be passed to sklearn.cluster.KMeans. If n_clusters
-        is not explicitly set, it will be automatically set; KMeans' default will
-        not apply.
+        Parameters to be passed to sklearn.cluster.KMeans or sklearn.cluster.MiniBatchKMeans. 
+        If n_clusters is not explicitly set, it will be automatically set; KMeans' default 
+        will not apply.
 
     smote_args : dict, optional (default={})
         Parameters to be passed to imblearn.over_sampling.SMOTE. Parameter ratio
@@ -92,6 +94,7 @@ class KMeansSMOTE(BaseOverSampler):
                 imbalance_ratio_threshold=1.0,
                 minority_weight=0.66,
                 density_power=None,
+                use_minibatch_kmeans=True,
                 kmeans_args={},
                 smote_args={},
                 n_jobs=1):
@@ -101,7 +104,8 @@ class KMeansSMOTE(BaseOverSampler):
         self.smote_args = smote_args
         self.random_state = random_state
         self.minority_weight = minority_weight
-        self.n_jobs=n_jobs
+        self.n_jobs = n_jobs
+        self.use_minibatch_kmeans = use_minibatch_kmeans
 
         self.density_power = density_power
 
@@ -119,16 +123,20 @@ class KMeansSMOTE(BaseOverSampler):
             The corresponding cluster label of `X_resampled`.
         """
 
-        kmeans = MiniBatchKMeans(**self.kmeans_args)
-
+        if self.use_minibatch_kmeans:
+            from sklearn.cluster import MiniBatchKMeans as KMeans
+        else:
+            from sklearn.cluster import KMeans as KMeans
+        
+        kmeans = KMeans(**self.kmeans_args)
         if(X.shape[0] < kmeans.n_clusters):
             warnings.warn('Adapting kmeans_args.n_clusters to {0} because X only has {1} samples.'.format(X.shape[0],X.shape[0]))
             self.kmeans_args['n_clusters'] = X.shape[0]
-            kmeans = MiniBatchKMeans(**self.kmeans_args)
+            kmeans = KMeans(**self.kmeans_args)
 
         if 'init_size' not in self.kmeans_args:
             self.kmeans_args['init_size'] = min(2 * self.kmeans_args['n_clusters'], X.shape[0])
-            kmeans = MiniBatchKMeans(**self.kmeans_args)
+            kmeans = KMeans(**self.kmeans_args)
 
         kmeans.fit_transform(X)
         cluster_assignment = kmeans.labels_
@@ -316,14 +324,15 @@ class KMeansSMOTE(BaseOverSampler):
     def _set_subalgorithm_params(self):
         # copy random_state to sub-algorithms
         if self.random_state is not None:
-            if ('random_state' not in self.smote_args):
+            if 'random_state' not in self.smote_args:
                     self.smote_args['random_state'] = self.random_state
-            if ('random_state' not in self.kmeans_args):
+            if 'random_state' not in self.kmeans_args:
                 self.kmeans_args['random_state'] = self.random_state
 
         # copy n_jobs to sub-algorithms
         if self.n_jobs is not None:
-            if ('n_jobs' not in self.smote_args):
+            if 'n_jobs' not in self.smote_args:
                     self.smote_args['n_jobs'] = self.n_jobs
-            if ('n_jobs' not in self.kmeans_args):
-                self.kmeans_args['n_jobs'] = self.n_jobs
+            if 'n_jobs' not in self.kmeans_args:
+                if not self.use_minibatch_kmeans:
+                    self.kmeans_args['n_jobs'] = self.n_jobs
