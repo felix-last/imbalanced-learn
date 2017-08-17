@@ -127,14 +127,14 @@ class KMeansSMOTE(BaseOverSampler):
             from sklearn.cluster import MiniBatchKMeans as KMeans
         else:
             from sklearn.cluster import KMeans as KMeans
-        
+
         kmeans = KMeans(**self.kmeans_args)
         if(X.shape[0] < kmeans.n_clusters):
             warnings.warn('Adapting kmeans_args.n_clusters to {0} because X only has {1} samples.'.format(X.shape[0],X.shape[0]))
             self.kmeans_args['n_clusters'] = X.shape[0]
             kmeans = KMeans(**self.kmeans_args)
 
-        if 'init_size' not in self.kmeans_args:
+        if self.use_minibatch_kmeans and 'init_size' not in self.kmeans_args:
             self.kmeans_args['init_size'] = min(2 * self.kmeans_args['n_clusters'], X.shape[0])
             kmeans = KMeans(**self.kmeans_args)
 
