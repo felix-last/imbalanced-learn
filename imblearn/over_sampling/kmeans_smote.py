@@ -69,17 +69,17 @@ class KMeansSMOTE(BaseOverSampler):
         This parameter ``w1`` specifies the weight of the minority instances; the weight of
         majority instances is set to ``1-w1``.
         ``n_clusters = (w1 * minority_count) + ((1-w1) * majority_count)
-    
+
     use_minibatch_kmeans : boolean, optional (default=True)
         If False, use sklearn.cluster.KMeans. If True, use sklearn.cluster.MiniBatchKMeans.
-    
+
     n_jobs : int, optional (default=1)
-        The number of threads to open if possible. 
+        The number of threads to open if possible.
         Will be copied to kmeans_args and smote_args if not explicitly passed there.
 
     kmeans_args : dict, optional (default={})
-        Parameters to be passed to sklearn.cluster.KMeans or sklearn.cluster.MiniBatchKMeans. 
-        If n_clusters is not explicitly set, it will be automatically set; KMeans' default 
+        Parameters to be passed to sklearn.cluster.KMeans or sklearn.cluster.MiniBatchKMeans.
+        If n_clusters is not explicitly set, it will be automatically set; KMeans' default
         will not apply.
 
     smote_args : dict, optional (default={})
@@ -167,26 +167,27 @@ class KMeansSMOTE(BaseOverSampler):
         # since the cluster labels are not continuous, make it large enough
         # to fit all values up to the largest cluster label
         largest_cluster_label = np.max(np.unique(cluster_assignment))
-        density_factors = np.zeros((largest_cluster_label + 1,), dtype=np.float64)
+        sparsity_factors = np.zeros((largest_cluster_label + 1,), dtype=np.float64)
         minority_mask = (y == minority_class_label)
-        density_sum = 0
+        sparsity_sum = 0
         for i in np.unique(cluster_assignment):
             cluster = X[cluster_assignment == i]
             mask = minority_mask[cluster_assignment == i]
             minority_count = cluster[mask].shape[0]
-            majority_count = cluster[-mask].shape[0]
+            majority_count = cluster[~mask].shape[0]
             imbalance_ratio = (majority_count + 1) / (minority_count + 1)
             if (imbalance_ratio < self.imbalance_ratio_threshold) and (minority_count > 1):
                 average_minority_distance = np.mean(euclidean_distances(cluster))
                 if average_minority_distance is 0: average_minority_distance = 1e-1 # to avoid division by 0
                 density_factor = minority_count / (average_minority_distance ** self.density_power)
-                density_factors[i] = density_factor
+                sparsity_factors[i] = 1 / density_factor
 
         # prevent division by zero; set zero weights in majority clusters
-        density_sum = density_factors.sum()
-        if density_sum == 0: density_sum = 1 # to avoid division by zero
-        density_sum = np.full(density_factors.shape, density_sum, np.asarray(density_sum).dtype)
-        sampling_weights = (density_factors / density_sum)
+        sparsity_sum = sparsity_factors.sum()
+        if sparsity_sum == 0: 
+            sparsity_sum = 1 # to avoid division by zero
+        sparsity_sum = np.full(sparsity_factors.shape, sparsity_sum, np.asarray(sparsity_sum).dtype)
+        sampling_weights = (sparsity_factors / sparsity_sum)
 
         return sampling_weights
 
@@ -320,7 +321,7 @@ class KMeansSMOTE(BaseOverSampler):
             warnings.warn('Adapting smote_args.k_neighbors to {0} because cluster only has {1} minority samples.'.format(max_k_neighbors, minority_count))
             smote = SMOTE(**smote_args)
         return smote_args
-    
+
     def _set_subalgorithm_params(self):
         # copy random_state to sub-algorithms
         if self.random_state is not None:
